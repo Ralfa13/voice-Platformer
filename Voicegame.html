@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Skrik & Hoppa Låda-Spel</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(to bottom, #87CEEB, #1E90FF);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 70vh;
+            overflow: hidden;
+        }
+
+        #ground {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            height: 20px;
+            background-color: #8B4513;
+        }
+
+        #player {
+            position: absolute;
+            left: 100px;
+            width: 50px;
+            height: 50px;
+            background-color: #FF5733;
+            bottom: 20px;
+            transition: transform 0.1s;
+        }
+
+        .obstacle {
+            position: absolute;
+            background-color: #333;
+            bottom: 20px;
+        }
+
+        #micIndicator {
+            width: 100%;
+            height: 50px;
+            background-color: #f1f1f1;
+            margin-top: 10px;
+            position: relative;
+        }
+
+        #micLevel {
+            height: 100%;
+            width: 0%;
+            background-color: #4CAF50;
+            transition: width 0.1s;
+        }
+
+        #instructions {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: rgba(255, 255, 255, 0.7);
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        #scoreDisplay {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 24px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+
+        #startScreen, #gameOverScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 100;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 18px;
+            margin-top: 20px;
+            background-color: #FF5733;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #FF8C66;
+        }
+
+        #gameOverScreen {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="scoreDisplay">0</div>
+        <div id="player"></div>
+        <div id="ground"></div>
+        <div id="startScreen">
+            <h1>Skrik & Hoppa Låda-Spel</h1>
+            <p>Skrik i mikrofonen för att hoppa! Desto högre du skriker, desto högre hoppar din låda.</p>
+            <p>Hoppa över de svarta lådorna för att få poäng!</p>
+            <button id="startButton">Starta Spelet</button>
+        </div>
+        <div id="gameOverScreen">
+            <h1>Game Over!</h1>
+            <p>Din poäng: <span id="finalScore">0</span></p>
+            <button id="restartButton">Spela Igen</button>
+        </div>
+    </div>
+    <div id="micIndicator">
+        <div id="micLevel"></div>
+    </div>
+    <div id="instructions">
+        <p>Skrik nu för att hoppa! Håll mikrofonen nära munnen.</p>
+    </div>
+
+    <script>
+        // Spelvariabler
+        const player = document.getElementById('player');
+        const gameContainer = document.getElementById('gameContainer');
+        const micLevel = document.getElementById('micLevel');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const finalScore = document.getElementById('finalScore');
+        const startButton = document.getElementById('startButton');
+        const restartButton = document.getElementById('restartButton');
+
+        let isJumping = false;
+        let isGameOver = false;
+        let score = 0;
+        let gameSpeed = 5;
+        let obstacleInterval;
+        let animationId;
+        let audioContext;
+        let analyser;
+        let microphone;
+        let isPlaying = false;
+
+        // Starta spelet
+        startButton.addEventListener('click', startGame);
+        restartButton.addEventListener('click', startGame);
+
+        function startGame() {
+            isGameOver = false;
+            score = 0;
+            gameSpeed = 5;
+            scoreDisplay.textContent = score;
+            startScreen.style.display = 'none';
+            gameOverScreen.style.display = 'none';
+            
+            // Rensa befintliga hinder
+            document.querySelectorAll('.obstacle').forEach(obs => obs.remove());
+            
+            // Starta ljudanalys
+            initAudio();
+            
+            // Starta hindergenerering
+            clearInterval(obstacleInterval);
+            obstacleInterval = setInterval(createObstacle, 2000);
+            
+            isPlaying = true;
+            gameLoop();
+        }
+
+        // Initiera ljud API
+        async function initAudio() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                microphone = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 32;
+                
+                microphone.connect(analyser);
+                
+                console.log("Ljud uppsättning klar");
+            } catch (error) {
+                console.error("Fel vid ljuduppsättning:", error);
+                alert("Kunde inte komma åt mikrofonen. Se till att tillåta mikrofontillgång.");
+            }
+        }
+
+        // Huvudspelloop
+        function gameLoop() {
+            if (isGameOver) return;
+            
+            // Analysera ljudnivå
+            if (analyser) {
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(dataArray);
+                
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                    sum += dataArray[i];
+                }
+                const average = sum / dataArray.length;
+                
+                // Uppdatera mikronivåindikator
+                micLevel.style.width = `${average}%`;
+                
+                // Hoppa om ljudnivån är tillräckligt hög
+                if (average > 10 && !isJumping) {
+                    jump(average);
+                }
+            }
+            
+            // Kollisionsdetektering
+            checkCollisions();
+            
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        // Hoppfunktion
+        function jump(power) {
+            isJumping = true;
+            const jumpHeight = Math.min(power * 2, 200); // Begränsa maxhopphöjd
+            
+            // Uppåtrörelse
+            let upPosition = 0;
+            const upInterval = setInterval(() => {
+                upPosition += 5;
+                player.style.bottom = `${20 + upPosition}px`;
+                
+                if (upPosition >= jumpHeight) {
+                    clearInterval(upInterval);
+                    
+                    // Nedåtrörelse
+                    const downInterval = setInterval(() => {
+                        upPosition -= 5;
+                        player.style.bottom = `${20 + upPosition}px`;
+                        
+                        if (upPosition <= 0) {
+                            clearInterval(downInterval);
+                            player.style.bottom = '20px';
+                            isJumping = false;
+                        }
+                    }, 20);
+                }
+            }, 20);
+        }
+
+        // Skapa hinder
+        function createObstacle() {
+            if (isGameOver) return;
+            
+            const obstacle = document.createElement('div');
+            obstacle.className = 'obstacle';
+            
+            const obstacleHeight = Math.floor(Math.random() * 80) + 20;
+            obstacle.style.height = `${obstacleHeight}px`;
+            obstacle.style.width = `${Math.floor(Math.random() * 30) + 20}px`;
+            obstacle.style.left = `${gameContainer.offsetWidth}px`;
+            
+            gameContainer.appendChild(obstacle);
+            
+            // Flytta hindret
+            const moveInterval = setInterval(() => {
+                if (isGameOver) {
+                    clearInterval(moveInterval);
+                    return;
+                }
+                
+                const currentLeft = parseInt(obstacle.style.left);
+                obstacle.style.left = `${currentLeft - gameSpeed}px`;
+                
+                // Ta bort hindret när det är utanför skärmen
+                if (currentLeft < -parseInt(obstacle.style.width)) {
+                    clearInterval(moveInterval);
+                    obstacle.remove();
+                    score++;
+                    scoreDisplay.textContent = score;
+                    
+                    // Öka svårighetsgraden
+                    if (score % 5 === 0) {
+                        gameSpeed += 0.5;
+                    }
+                }
+            }, 20);
+        }
+
+        // Kollisionsdetektering
+        function checkCollisions() {
+            const playerRect = player.getBoundingClientRect();
+            const obstacles = document.querySelectorAll('.obstacle');
+            
+            obstacles.forEach(obstacle => {
+                const obstacleRect = obstacle.getBoundingClientRect();
+                
+                // Enkel kollisionsdetektering
+                if (
+                    playerRect.right > obstacleRect.left &&
+                    playerRect.left < obstacleRect.right &&
+                    playerRect.bottom > obstacleRect.top
+                ) {
+                    gameOver();
+                }
+            });
+        }
+
+        // Game over
+        function gameOver() {
+            isGameOver = true;
+            cancelAnimationFrame(animationId);
+            clearInterval(obstacleInterval);
+            
+            finalScore.textContent = score;
+            gameOverScreen.style.display = 'flex';
+            
+            // Stoppa ljudanalys
+            if (microphone) {
+                microphone.disconnect();
+            }
+        }
+    </script>
+</body>
+</html>
